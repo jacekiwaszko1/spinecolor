@@ -1,0 +1,560 @@
+#!/usr/bin/env perl
+
+use strict;
+use Term::ANSIColor;
+use Getopt::Long;
+Getopt::Long::Configure("bundling");
+
+###################
+##### OPTIONS #####
+###################
+
+my $widthQ;
+my $equalQ;
+my $nocolorQ;
+my $helpQ;
+my $extractQ;
+my $pagedQ;
+
+GetOptions (
+'w|width' => \$widthQ,
+'e|equal' => \$equalQ,
+'n|no-color' => \$nocolorQ,
+'h|help' => \$helpQ,
+'x|extract' => \$extractQ,
+'p|paged' => \$pagedQ,
+);
+
+###################
+
+### HELP ###
+printHelpAndExit() if $helpQ;
+############
+
+
+
+if (@ARGV > 1) { ## test: changed from (@ARGV != 1)
+  print "ERROR: ", color("bold"), "spinecolor", color("reset"), " requires only one input file. \n\n";
+  printHelpAndExit();
+}
+
+if (@ARGV == 0 && -t STDIN) {
+  print "ERROR: ", color("bold"), "spinecolor", color("reset"), " requires one input file or piped data. \n\n";
+  printHelpAndExit();
+}
+
+
+
+my $file = $ARGV[0];
+my $tempfilename;
+if ($file eq "") {
+  my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) = localtime();
+  $tempfilename = "spinecolor-temp-$year-$mon-$mday-$hour-$min-$sec";
+}
+
+
+my @input = <>;
+if (@input == 0) {
+  printHelpAndExit();
+}
+
+if ($input[-1] !~ /\n/) {
+  $input[-1] =~ s/$/\n/;
+}
+
+
+
+
+
+######################################
+## -x option:                       ##
+## delete colloring,                ##
+## replace multiple tabs by one tab ##
+## and exit                         ##
+######################################
+
+
+if ($extractQ) {
+  my $extractoutput;
+  for (my $x = 0; $x < @input; $x++) {
+    $extractoutput .= extractX($input[$x]);
+  }
+
+  if ($pagedQ) {
+    open(LESS, "| less -R");
+    print LESS $extractoutput;
+    close(LESS);
+  } else {
+    print $extractoutput;
+  }
+
+
+  exit;
+}
+
+
+######################################
+
+
+chomp (my $command = `which spinetrace`);
+if (!$command) {
+  chomp ($command = `locate spinetrace | grep "\/bin\/spinetrace$" | head -n 1`);
+}
+if (!$command) {
+  die "You must first install Humdrum Extras to use this program\n" . "(See https://github.com/humdrum-tools/humdrum-tools\n";
+
+}
+
+my @spinetrace;
+if ($file eq "") {
+  open(FILE, ">", "$tempfilename");
+  print FILE @input;
+  close(FILE);
+  @spinetrace = `$command $tempfilename`;
+} else {
+  @spinetrace = `$command $file`;
+}
+
+
+
+
+
+####################################################
+## add !!!!SEGMENT line if there's one in @input. ##
+####################################################
+
+if ($input[0] =~ /^!!!!SEGMENT:/) {
+  if ($spinetrace[0] !~ /^!!!!SEGMENT:/) {
+    unshift(@spinetrace, $input[0]);
+  }
+  #print @spinetrace;
+
+}
+
+my $output;
+
+
+my @last_colors;
+my $spinemerge;
+my $spinesplit;
+
+my $nextsplit;
+
+my $previous_spinenumber;
+my $previous_subspinecount;
+
+
+
+
+
+######################################################
+## check for number of spines                       ##
+## check for the max. subspine count for each spine ##
+######################################################
+
+my @spinemap = @spinetrace;
+
+for (my $a = 0; $a < @spinemap; $a++) {
+  if ($spinemap[$a] =~ /^[!*=]/) {
+    delete $spinemap[$a];
+  }
+  $spinemap[$a] =~ s/[)(a-z]*//g;
+}
+
+my %spinecount;
+
+for (my $c = 0; $c < @spinemap; $c++) {
+  my %linespinecount;
+  my @line = split("\t", @spinemap[$c]);
+
+  for (my $b = 0; $b < @line; $b++) {
+    chomp $line[$b];
+    $linespinecount{$line[$b]}++;
+    if ($linespinecount{$line[$b]} > $spinecount{$line[$b]}) {
+      $spinecount{$line[$b]} = $linespinecount{$line[$b]};
+    }
+
+  }
+
+}
+
+my $hashcount = keys(%spinecount);
+
+######################################################
+
+
+#####################
+######MAIN LOOP######
+#####################
+
+for (my $i = 0; $i < @input; $i++) {
+
+  ################################
+  ## check for split/merge line ##
+  ################################
+
+
+  if ($input[$i] =~ /\*v/) {
+    $spinemerge = 1;
+  } else {
+    $spinemerge = 0;
+  }
+
+
+  if ($input[$i] =~ /\*\^/) {
+    $spinesplit = 1;
+  } else {
+    $spinesplit = 0;
+  }
+
+  my $merger;
+
+  my $splitter;
+
+  my %subspinecount;
+
+  my $firstsub;
+
+  my %charcount;
+
+################################
+
+
+#############################
+## split lines into arrays ##
+#############################
+
+  my @line = split("\t", @input[$i]);
+  my @stline = split("\t", @spinetrace[$i]);
+
+#############################
+
+
+
+  for (my $j = 0; $j < @line; $j++) {
+
+
+    ##################################
+    ## color layout comments yellow ##
+    ##################################
+
+    if ($input[$i] =~ /^!!/) {
+      if ($nocolorQ) {
+        #print "$input[$i]"; ## old printing method
+        $output .= "$input[$i]";
+      } else {
+        #print color("yellow"), "$input[$i]", color("reset"); ## old printing method
+        $output .= color("yellow") . "$input[$i]" . color("reset");
+
+      }
+
+      next;
+    }
+
+    ##################################
+
+    my $spinenumber;
+
+    ##############################
+    ## first line of kern score ##
+    ##############################
+
+
+    if ($line[$j] eq $stline[$j]) {
+      if ($input[$i] =~ /^\*\*/) {
+        $spinenumber = $j + 1;
+        $last_colors[$j] = $spinenumber;
+
+      ###############################
+      ## calculate spinecolors     ##
+      ## for current and next line ##
+      ## SPINESPLIT                ##
+      ###############################
+
+      } elsif ($spinesplit) {
+        my $splitline = $j + $splitter;
+        my $jnext = $j + 1;
+        $spinenumber = $last_colors[$splitline];
+        if ($line[$j] =~ /\*\^/) {
+          splice(@last_colors, $jnext, 0, "$last_colors[$splitline]");
+          $splitter++;
+        }
+
+      ###############################
+
+
+      ###############################
+      ## calculate spinecolors     ##
+      ## for current and next line ##
+      ## SPINEMERGE                ##
+      ###############################
+
+
+      } elsif ($spinemerge){
+
+        my $mergeline = $j - $merger;
+        my $nextj = $j + 1;
+        $spinenumber = $last_colors[$mergeline];
+        if ($line[$j] =~ /\*v/) {
+          if ($merger > 0) {
+            splice(@last_colors, $mergeline, 1);
+          }
+          if ($line[$nextj] !~ /^\*\n?$/) {
+            $merger++;
+          }
+
+        }
+
+
+      ###############################
+
+
+      } else {
+        $spinenumber = $last_colors[$j];
+      }
+
+    }
+
+    ##############################
+
+
+    if ($line[$j] ne $stline[$j]) {
+
+      if ($stline[$j] =~ /^[0-9]*$/) {
+        $spinenumber = $stline[$j];
+
+      } else {
+        $spinenumber = $stline[$j];
+        $spinenumber =~ s/[)(a-z]*//g;
+
+      }
+
+    }
+
+    ##################################################
+    ## Save spine colors                            ##
+    ## and use them if there's no info about spines ##
+    ## in spinetrace                                ##
+    ##################################################
+
+    ### Check colors of next lines and push them to @last_colors
+    ### spinesplit and spinemerge are dealt wirh above
+    if (!$spinesplit && !$spinemerge) {
+      $last_colors[$j] = $spinenumber;
+    }
+
+    ##################################################
+
+
+
+    #####################################
+    ## mark which token in spine it is ##
+    #####################################
+    chomp $spinenumber;
+    $subspinecount{$spinenumber}++;
+
+    if ($j == 0) {
+      $firstsub = 0;
+    } elsif ($spinenumber > $previous_spinenumber) {
+      $firstsub = 1;
+    } else {
+      $firstsub = 0;
+    }
+
+
+    #####################################
+
+
+    ###########################
+    ## deal with long tokens ##
+    ###########################
+    my $length = length($line[$j]);
+      if ($length > 7) {
+        $charcount{$spinenumber}++;
+      }
+      if ($length > 15) {
+        $charcount{$spinenumber}++;
+      }
+
+
+    ######################
+    ## color each token ##
+    ######################
+
+
+    #print "$spinenumber.$subspinecount{$spinenumber}";
+
+
+    color_token($line[$j], $spinenumber, $previous_spinenumber, $subspinecount{$spinenumber}, $firstsub,  %charcount);
+
+    $previous_spinenumber = $spinenumber;
+    $previous_subspinecount = $subspinecount{$spinenumber};
+
+
+    ######################
+
+
+  }
+
+}
+
+
+################
+##PRINT OUTPUT##
+################
+
+
+if ($pagedQ) {
+
+  open(LESS, "| less -R");
+  print LESS $output;
+  close(LESS);
+
+} else {
+
+  print $output;
+
+}
+
+
+########################################
+## unlink tempfilename if there's one ##
+########################################
+
+if ($tempfilename) {
+  unlink $tempfilename;
+}
+
+
+
+#########################
+#######SUBROURINES#######
+#########################
+
+sub color_token {
+  my ($token, $spinenumber, $previous_spinenumber, $subspinecount, $firstsub,  %charcount) = @_;
+  my @color = qw(red green blue);
+
+  my $colornumber = $spinenumber % 3;
+  my $previous_colornumber = $previous_spinenumber % 3;
+
+
+  if (!$firstsub) {
+      if ($token =~ /\n/) {
+        if ($nocolorQ) {
+          #print "$token"; ## old printing method
+          $output .= "$token";
+        } else {
+          #print color("$color[$colornumber]"), "$token", color("reset"); ##old printing method
+          $output .= color("$color[$colornumber]") . "$token" . color("reset");
+        }
+
+
+
+    } else {
+      if ($nocolorQ) {
+        #print "$token\t"; ##old printing method
+        $output .= "$token\t";
+      } else {
+        #print color("$color[$colornumber]"), "$token\t", color("reset"); ##old printing method
+        $output .= color("$color[$colornumber]") . "$token\t" . color("reset");
+      }
+
+    }
+
+
+
+  } elsif ($firstsub) {
+
+    if ($widthQ) {
+      $previous_subspinecount += $charcount{$previous_spinenumber};
+      my $tabstoadd = $spinecount{$previous_spinenumber} + 1;
+      for (my $i = $previous_subspinecount; $i < $tabstoadd; $i++) {
+        if ($nocolorQ) {
+          #print "\t"; old printing method
+          $output .= "\t";
+        } else {
+          #print color("$color[$previous_colornumber]"), "\t", color("reset"); ## old printing method
+          $output .= color("$color[$previous_colornumber]") . "\t" . color("reset");
+        }
+
+      }
+    }
+
+
+    if ($equalQ) {
+      my $tabstoadd = $spinecount{$previous_spinenumber};
+      for (my $i = $previous_subspinecount; $i < $tabstoadd; $i++) {
+        if ($nocolorQ) {
+          #print "\t"; ## old printing method
+          $output .= "\t";
+        } else {
+          #print color("$color[$previous_colornumber]"), "\t", color("reset"); ## old printing method
+          $output .= color("$color[$previous_colornumber]") . "\t" . color("reset");
+        }
+
+      }
+
+    }
+
+
+
+    if ($token =~ /\n/) {
+
+      if ($nocolorQ) {
+        #print "$token"; ## old printing method
+        $output .= "$token";
+      } else {
+        #print color("$color[$colornumber]"), "$token", color("reset"); # old printing method
+        $output .= color("$color[$colornumber]") . "$token" . color("reset");
+      }
+
+
+    } else {
+      if ($nocolorQ) {
+        #print "$token\t"; ##old printing method
+        $output .= "$token\t";
+      } else {
+        #print color("$color[$colornumber]"), "$token\t", color("reset"); ## old printing method
+        $output .= color("$color[$colornumber]") . "$token\t" . color("reset");
+      }
+
+    }
+
+  }
+
+}
+
+
+#########################
+
+sub printHelpAndExit {
+  print color("bold"), "USAGE\n", color("reset");
+
+  print "\t", color("bold"), "spinecolor", color("reset"), " [-ehnpwx] file\n\n";
+  print color("bold"), "OPTIONS\n", color("reset");
+
+
+  print "\t", color("bold"), "-e, --equal\n", color("reset"), "\t  print one tab for each missing subspine.\n\n";
+  print "\t", color("bold"), "-n, --no-color\n", color("reset"), "\t  do not colorize output.\n\n";
+  print "\t", color("bold"), "-w, --width\n", color("reset"), "\t  variable tabbing based on spine width\n\t  (assuming tab is 8 characters).\n\n";
+  print "\t", color("bold"), "-x, --extract\n", color("reset"), "\t  extract proper humdrum encoding from marked up file\n\t  (no additional tabs, no color markers).\n\n";
+  print "\t", color("bold"), "-p, --paged\n", color("reset"), "\t  display result in paged view.\n\n";
+  print "\t", color("bold"), "-h, --help\n", color("reset"), "\t  display this message.\n\n";
+
+
+  print color("bold"), "AUTHORS\n", color("reset");
+  print "\tWritten by Jacek Iwaszko and Craig Stuart Sapp, 2018\n";
+
+  print "\n";
+
+  exit(1);
+}
+
+
+sub extractX {
+  my ($line) = @_;
+  $line =~ s/\e[[]\d+m//g;
+  $line =~ s/\t+/\t/g;
+  return $line;
+}
